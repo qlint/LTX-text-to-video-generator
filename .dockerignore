@@ -1,0 +1,9 @@
+.env
+.download-venv
+.git
+.pytest_cache
+__pycache__
+*.pyc
+models
+output
+redis-data

@@ -1,0 +1,85 @@
+x-app-build: &app-build
+  context: .
+  args:
+    INSTALL_LTX: ${INSTALL_LTX:-false}
+    LTX_REF: ${LTX_REF:-main}
+    LTX_UV_SYNC_ARGS: "${LTX_UV_SYNC_ARGS:---frozen --no-dev --package ltx-pipelines}"
+
+services:
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    restart: unless-stopped
+
+  api:
+    image: text-to-video-generator-app:latest
+    build: *app-build
+    env_file:
+      - .env
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+    volumes:
+      - ${HOST_MODEL_ROOT:-./models}:/models:ro
+      - ./output:/app/output
+      - ${HOST_WEB_ROOT:-/var/www/html}:/var/www/html
+    ports:
+      - "${API_PORT:-8000}:8000"
+    depends_on:
+      - redis
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+
+  worker:
+    image: text-to-video-generator-app:latest
+    build: *app-build
+    command: ["celery", "-A", "app.queue.celery_app.celery_app", "worker", "--loglevel=INFO", "--pool=solo", "--concurrency=1"]
+    env_file:
+      - .env
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+    volumes:
+      - ${HOST_MODEL_ROOT:-./models}:/models:ro
+      - ./output:/app/output
+      - ${HOST_WEB_ROOT:-/var/www/html}:/var/www/html
+    depends_on:
+      - redis
+    ipc: host
+    shm_size: "32gb"
+    restart: unless-stopped
+
+  flower:
+    image: text-to-video-generator-app:latest
+    build: *app-build
+    command:
+      - /bin/sh
+      - -c
+      - |
+        if [ -z "$$FLOWER_BASIC_AUTH" ]; then
+          unset FLOWER_BASIC_AUTH
+          exec celery -A app.queue.celery_app.celery_app flower --address=0.0.0.0 --port=5555
+        fi
+        exec celery -A app.queue.celery_app.celery_app flower --address=0.0.0.0 --port=5555 --basic_auth="$$FLOWER_BASIC_AUTH"
+    env_file:
+      - .env
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+    ports:
+      - "${FLOWER_PORT:-5555}:5555"
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+volumes:
+  redis-data:
